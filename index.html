@@ -157,7 +157,7 @@ const PAY={mpaisa:"M-PAiSA number: 9374678",binance:"Binance Pay ID (UID): 88825
 const LIVE=!FB.apiKey.startsWith("YOUR_")&&window.firebase;
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let me=null,items=[],orders=[],cat='All',tab='store',mode='login';
+let me=null,items=[],orders=[],users=[],usersErr='',regBusy=false,authMsg='',cat='All',tab='store',mode='login';
 
 /* ---- data layer: Firestore when configured, localStorage demo otherwise ---- */
 let auth,fs;
@@ -191,8 +191,11 @@ async function doLogin(email,pw){
  ls.set('nx_sess',u.uid);boot();
 }
 async function doRegister(name,email,pw){
- if(LIVE){const r=await auth.createUserWithEmailAndPassword(email,pw);
-  await fs.collection('users').doc(r.user.uid).set({email,name,role:'customer'});return}
+ if(LIVE){regBusy=true;
+  try{const r=await auth.createUserWithEmailAndPassword(email,pw);
+   await fs.collection('users').doc(r.user.uid).set({email,name,role:'customer'})}
+  finally{regBusy=false}
+  boot();return}
  const us=ls.get('nx_users',[]);
  if(us.some(u=>u.email===email.toLowerCase()))throw new Error('Email already registered.');
  const u={uid:uid(),email:email.toLowerCase(),pass:pw,name,role:'customer'};us.push(u);ls.set('nx_users',us);ls.set('nx_sess',u.uid);boot();
@@ -200,13 +203,15 @@ async function doRegister(name,email,pw){
 async function loadMe(){
  if(LIVE){const u=auth.currentUser;if(!u)return null;
   const d=await fs.collection('users').doc(u.uid).get();
-  const x=d.exists?d.data():{role:'customer',name:u.email};
+  if(!d.exists){authMsg='This account has been removed. Contact an admin.';await auth.signOut();return null}
+  const x=d.data();
   return {uid:u.uid,email:u.email,name:x.name||u.email,role:x.role||'customer'};}
  const id=ls.get('nx_sess');return ls.get('nx_users',[]).find(u=>u.uid===id)||null;
 }
 async function boot(){
+ if(regBusy)return;
  me=await loadMe();
- if(!me){$('#app').classList.add('hide');$('#auth').classList.remove('hide');return}
+ if(!me){$('#app').classList.add('hide');$('#auth').classList.remove('hide');if(authMsg){$('#aerr').textContent=authMsg;authMsg=''}return}
  $('#auth').classList.add('hide');$('#app').classList.remove('hide');
  $('#role').textContent=me.role;$('#role').className='role '+(me.role==='admin'?'admin':'');
  $('#heroP').textContent=me.role==='admin'?'Admin console: manage cheats, banners and customer orders.':'Welcome back, '+me.name+'. Browse PC and Mobile cheats.';
@@ -218,6 +223,8 @@ async function refresh(){
  items=await DB.list('items');
  let o=await DB.list('orders');
  orders=me.role==='admin'?o:o.filter(x=>x.uid===me.uid);
+ users=[];usersErr='';
+ if(me.role==='admin'){try{users=(await DB.list('users')).map(u=>({id:u.id||u.uid,name:u.name,email:u.email,role:u.role}))}catch(e){usersErr='Could not load users. Check your Firestore rules allow admins to read the users collection.'}}
  nav();render();
 }
 
@@ -237,7 +244,7 @@ $('#out').onclick=async()=>{if(LIVE)await auth.signOut();else{localStorage.remov
 
 /* ---- navigation + views ---- */
 function nav(){
- const t=me.role==='admin'?[['store','Store'],['orders','Orders ('+orders.filter(o=>o.status==='pending').length+')'],['subs','Subscriptions']]:[['store','Store'],['lib','My Orders']];
+ const t=me.role==='admin'?[['store','Store'],['orders','Orders ('+orders.filter(o=>o.status==='pending').length+')'],['users','Users ('+users.length+')'],['subs','Subscriptions']]:[['store','Store'],['lib','My Orders']];
  $('#nav').innerHTML=t.map(([k,l])=>`<button type="button" class="${tab===k?'on':''}" data-t="${k}">${l}</button>`).join('');
  $('#nav').querySelectorAll('button').forEach(b=>b.onclick=()=>{tab=b.dataset.t;nav();render()});
 }
@@ -247,6 +254,7 @@ function render(){
  const v=$('#view');v.classList.remove('view-in');void v.offsetWidth;v.classList.add('view-in');
  if(tab==='store')v.innerHTML=storeHTML();
  else if(tab==='subs'&&me.role==='admin'){v.innerHTML=subsHTML();subsGo()}
+ else if(tab==='users'&&me.role==='admin')v.innerHTML=usersHTML();
  else if(tab==='orders')v.innerHTML=ordersHTML(true);
  else v.innerHTML=ordersHTML(false);
  wire();
@@ -278,6 +286,13 @@ function subsGo(){
  $('#kx').onclick=()=>{clearInterval(kaT);c.parentElement.textContent='Redirect cancelled. Use the button to open the portal.'};
  kaT=setInterval(()=>{n--;if(c)c.textContent=n;if(n<=0){clearInterval(kaT);location.href=KEYAUTH_URL}},1000);
 }
+function usersHTML(){
+ if(usersErr)return `<div class="empty">${esc(usersErr)}</div>`;
+ if(!users.length)return '<div class="empty">No registered users yet.</div>';
+ const s=[...users].sort((a,b)=>(a.role===b.role?0:a.role==='admin'?-1:1)||String(a.email).localeCompare(String(b.email)));
+ return `<div class="bar"><h2 style="font-size:26px">Registered users</h2><span class="sp"></span><span class="tag">${users.length} total</span></div>
+ <div class="wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Change role</th><th>User ID</th><th>Delete</th></tr></thead><tbody>${s.map((u,n)=>`<tr style="--i:${Math.min(n,12)}"><td>${esc(u.name||'-')}</td><td>${esc(u.email)}</td><td><span class="role ${u.role==='admin'?'admin':''}">${esc(u.role||'customer')}</span></td><td>${u.id===me.uid?'<span style="color:var(--mu);font-size:13px">You</span>':`<select data-ur="${esc(u.id)}" aria-label="Role for ${esc(u.email)}" style="min-height:36px;width:auto"><option value="customer"${u.role!=='admin'?' selected':''}>customer</option><option value="admin"${u.role==='admin'?' selected':''}>admin</option></select>`}</td><td style="color:var(--mu);font-size:12px">${esc(u.id)}</td><td>${u.id===me.uid?'':`<button type="button" class="btn bad sm" data-ud="${esc(u.id)}" aria-label="Delete ${esc(u.email)}" title="Delete user"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14M10 11v6M14 11v6"/></svg></button>`}</td></tr>`).join('')}</tbody></table></div>`;
+}
 function ordersHTML(adm){
  if(!orders.length)return '<div class="empty">No orders yet.</div>';
  return `<div class="wrap"><table><thead><tr><th>Item</th>${adm?'<th>Customer</th>':''}<th>Method</th><th>Reference</th><th>Status</th><th></th></tr></thead><tbody>${orders.map(o=>{
@@ -293,6 +308,28 @@ function wire(){
  q('d',async id=>{if(confirm('Delete this item?')){await DB.del('items',id);refresh()}});
  q('a',id=>setOrder(id,'approved'));q('r',id=>setOrder(id,'rejected'));
  const a=$('#add');if(a)a.onclick=()=>itemDlg();
+ document.querySelectorAll('[data-ud]').forEach(b=>b.onclick=async()=>{
+  const u=users.find(x=>x.id===b.dataset.ud);if(!u)return;
+  if(!confirm('Delete user '+(u.email||u.id)+'?\n\nThey will lose access to the site. This cannot be undone.'))return;
+  try{await deleteUser(u.id);refresh()}catch(e){alert('Could not delete user: '+e.message)}
+ });
+ document.querySelectorAll('[data-ur]').forEach(s=>s.onchange=async()=>{
+  const u=users.find(x=>x.id===s.dataset.ur),nr=s.value;
+  if(!u||nr===u.role)return;
+  if(!confirm('Change '+(u.email||'this user')+' from '+u.role+' to '+nr+'?')){s.value=u.role;return}
+  try{await setRole(u.id,nr);refresh()}catch(e){alert('Could not change role: '+e.message);s.value=u.role}
+ });
+}
+async function setRole(id,role){
+ if(role!=='admin'&&role!=='customer')throw new Error('Invalid role');
+ if(id===me.uid)throw new Error('You cannot change your own role.');
+ if(LIVE){await fs.collection('users').doc(id).update({role})}
+ else{const a=ls.get('nx_users',[]);const u=a.find(x=>x.uid===id);if(u)u.role=role;ls.set('nx_users',a)}
+}
+async function deleteUser(id){
+ if(id===me.uid)throw new Error('You cannot delete your own account.');
+ if(LIVE){await fs.collection('users').doc(id).delete()}
+ else ls.set('nx_users',ls.get('nx_users',[]).filter(x=>x.uid!==id));
 }
 async function setOrder(id,s){const o=orders.find(x=>x.id===id);await DB.save('orders',{...o,status:s});refresh()}
 
