@@ -172,7 +172,7 @@ const LIVE=!FB.apiKey.startsWith("YOUR_")&&window.firebase;
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let me=null,items=[],orders=[],users=[],usersErr='',regBusy=false,authMsg='',cat='All',tab='store',mode='login';
-let plans=[],apps=[],fields=[],licenses=[],v2Err='',appSel='',verSel='',fieldsEditable=true,fresh=new Set();
+let plans=[],apps=[],fields=[],licenses=[],v2Err='',appSel='',verSel='',fieldsEditable=true,dc=null,fresh=new Set();
 
 /* ---- data layer: Firestore when configured, localStorage demo otherwise ---- */
 let auth,fs;
@@ -243,7 +243,7 @@ async function refresh(){
  plans=[];apps=[];fields=[];licenses=[];v2Err='';
  if(me.role==='admin'){
   if(!apiCfg().url||!apiCfg().token)v2Err='Backend not connected yet. Set your backend URL and admin token.';
-  else{try{const [p,a,l]=await Promise.all([api('GET','/admin/plans'),api('GET','/admin/apps'),api('GET','/admin/licenses')]);plans=p.plans;apps=a.apps;licenses=l.licenses;await loadFields()}catch(e){v2Err='Could not reach the backend: '+e.message}}
+  else{try{const [p,a,l]=await Promise.all([api('GET','/admin/plans'),api('GET','/admin/apps'),api('GET','/admin/licenses')]);plans=p.plans;apps=a.apps;licenses=l.licenses;try{dc=await api('GET','/admin/discord')}catch(e){dc=null}await loadFields()}catch(e){v2Err='Could not reach the backend: '+e.message}}
  }
  checkApproved();
  nav();render();
@@ -265,7 +265,7 @@ $('#out').onclick=async()=>{if(LIVE)await auth.signOut();else{localStorage.remov
 
 /* ---- navigation + views ---- */
 function nav(){
- const t=me.role==='admin'?[['store','Store'],['orders','Orders ('+orders.filter(o=>o.status==='pending').length+')'],['users','Users ('+users.length+')'],['lic','Licenses'],['apps','App Controls'],['subs','KeyAuth (legacy)']]:[['store','Store'],['lib','My Orders'+(fresh.size?' ('+fresh.size+' new)':'')]];
+ const t=me.role==='admin'?[['store','Store'],['orders','Orders ('+orders.filter(o=>o.status==='pending').length+')'],['users','Users ('+users.length+')'],['lic','Licenses'],['apps','App Controls'],['discord','Discord'],['subs','KeyAuth (legacy)']]:[['store','Store'],['lib','My Orders'+(fresh.size?' ('+fresh.size+' new)':'')]];
  $('#nav').innerHTML=t.map(([k,l])=>`<button type="button" class="${tab===k?'on':''}" data-t="${k}">${l}</button>`).join('');
  $('#nav').querySelectorAll('button').forEach(b=>b.onclick=()=>{if(tab==='lib'&&b.dataset.t!=='lib')clearFresh();tab=b.dataset.t;nav();render()});
 }
@@ -278,6 +278,7 @@ function render(){
  else if(tab==='users'&&me.role==='admin')v.innerHTML=usersHTML();
  else if(tab==='lic'&&me.role==='admin')v.innerHTML=licHTML();
  else if(tab==='apps'&&me.role==='admin')v.innerHTML=appsHTML();
+ else if(tab==='discord'&&me.role==='admin')v.innerHTML=discordHTML();
  else if(tab==='orders')v.innerHTML=ordersHTML(true);
  else v.innerHTML=ordersHTML(false);
  wire();
@@ -378,7 +379,8 @@ function itemDlg(it={}){
   if(o.type==='sale'&&!o.priceFJD){$('#ferr').textContent='Enter a price for sale items.';return}
   if(o.type!=='sale'){o.priceFJD='';o.priceUSDT=''}
   const f=$('#f8').files[0];if(f)o.banner=await shrink(f);
-  try{await DB.save('items',o);dlg.close();refresh()}catch(e){$('#ferr').textContent=e.message}
+  try{await DB.save('items',o)}catch(e){$('#ferr').textContent=e.message;return}
+  dlg.close();refresh();discordItemEvent(it,o);
  };
 }
 function shrink(file){return new Promise(res=>{const im=new Image();im.onload=()=>{const w=Math.min(800,im.width),c=document.createElement('canvas');c.width=w;c.height=im.height*w/im.width;c.getContext('2d').drawImage(im,0,0,c.width,c.height);res(c.toDataURL('image/jpeg',.72))};im.src=URL.createObjectURL(file)})}
@@ -729,6 +731,57 @@ function verDlg(){
  $('#sv').onclick=async()=>{const version=$('#v1').value.trim();
   try{await api('POST','/admin/apps/'+ap.id+'/versions',{version,note:$('#v2').value.trim()});verSel=version;dlg.close();refresh()}catch(e){$('#ferr').textContent=e.message}};
 }
+
+
+/* ====== Discord: manual posts + automatic store announcements (webhook lives on the backend) ====== */
+async function discordItemEvent(old,o){
+ try{
+  if(!dc||!dc.configured||!apiCfg().url)return;
+  let event;
+  if(!old.id)event='new_item';
+  else if(o.type==='sale'&&(String(old.priceFJD||'')!==String(o.priceFJD||'')||String(old.priceUSDT||'')!==String(o.priceUSDT||'')))event='price_change';
+  else return;
+  if(event==='new_item'&&!dc.notify_new_item)return;
+  if(event==='price_change'&&!dc.notify_price_change)return;
+  await api('POST','/admin/discord/notify',{event,title:o.title,category:o.cat,type:o.type,price_fjd:o.priceFJD,price_usdt:o.priceUSDT,old_fjd:old.priceFJD||'',old_usdt:old.priceUSDT||'',description:o.desc||'',store_url:location.href.split('#')[0]});
+  toast('📣 Posted to Discord','ok');
+ }catch(e){toast('Discord post failed: '+e.message)}
+}
+function discordHTML(){
+ if(v2Err)return `<div class="empty">${esc(v2Err)}<div style="margin-top:16px">${cfgBtn}</div></div>`;
+ if(!dc)return `<div class="empty">Your backend does not have the Discord feature yet. Upload the latest app.py and press Reload on PythonAnywhere.<div style="margin-top:16px">${cfgBtn}</div></div>`;
+ const chk='style="width:auto;min-height:0"';
+ return `<div class="bar"><h2 style="font-size:26px">Discord</h2><span class="tag">${dc.configured?'webhook connected':'not connected'}</span><span class="sp"></span>${cfgBtn}</div>
+ <div class="note" style="margin:0 0 12px">The webhook URL is saved on your backend only. It is never stored in this browser or shown again (anyone holding it can post to your channel).</div>
+ <label for="dw">Webhook URL</label>
+ <div class="row"><input id="dw" type="password" autocomplete="off" style="flex:1;min-width:220px" placeholder="${dc.configured?esc(dc.masked)+' (saved, paste a new URL to replace)':'https://discord.com/api/webhooks/ID/TOKEN'}"><button type="button" class="btn" data-act="dsave">Save webhook</button>${dc.configured?'<button type="button" class="btn ghost sm" data-act="dtest">Send test</button><button type="button" class="btn bad sm" data-act="ddel">Remove</button>':''}</div>
+ <div class="err" id="derr" role="alert"></div>
+ <h3 style="font-size:22px;margin:24px 0 8px">Automatic announcements</h3>
+ <label style="display:flex;align-items:center;gap:8px;color:var(--tx)"><input type="checkbox" id="dn1" ${chk} ${dc.notify_new_item?'checked':''}> Post when I add a new store item</label>
+ <label style="display:flex;align-items:center;gap:8px;color:var(--tx)"><input type="checkbox" id="dn2" ${chk} ${dc.notify_price_change?'checked':''}> Post when I change an item’s price</label>
+ <div class="note" style="margin-top:8px">Announcements show the title, category and price only. Download links are never posted.</div>
+ <h3 style="font-size:22px;margin:24px 0 8px">Send a message</h3>
+ <label for="dt">Title (optional, makes it a styled card)</label><input id="dt" maxlength="200">
+ <label for="dm">Message</label><textarea id="dm" maxlength="2000" rows="5" ${dc.configured?'':'disabled'}></textarea>
+ <label style="display:flex;align-items:center;gap:8px;color:var(--tx)"><input type="checkbox" id="dp" ${chk}> Allow @everyone / @here / role pings</label>
+ <div class="row" style="margin-top:12px"><button type="button" class="btn" data-act="dsend" ${dc.configured?'':'disabled'}>Send to Discord</button></div>`;
+}
+$('#view').addEventListener('change',async e=>{
+ if(me?.role!=='admin'||(e.target.id!=='dn1'&&e.target.id!=='dn2'))return;
+ try{dc=await api('PUT','/admin/discord',e.target.id==='dn1'?{notify_new_item:e.target.checked}:{notify_price_change:e.target.checked});toast('Saved','ok')}catch(x){alert(x.message);refresh()}
+});
+$('#view').addEventListener('click',async e=>{
+ const b=e.target.closest('[data-act]');if(!b||!me||me.role!=='admin')return;
+ const a=b.dataset.act;if(!['dsave','dtest','ddel','dsend'].includes(a))return;
+ const er=$('#derr');if(er)er.textContent='';
+ try{
+  if(a==='dsave'){const u=$('#dw').value.trim();if(!u){er.textContent='Paste your webhook URL first.';return}dc=await api('PUT','/admin/discord',{webhook_url:u});toast('Webhook saved','ok');render();return}
+  if(a==='dtest'){await api('POST','/admin/discord/send',{title:'Nighthawks test',content:'Connection works ✅'});toast('Test message sent','ok');return}
+  if(a==='ddel'){if(confirm('Remove the saved webhook? Automatic posts will stop.')){dc=await api('DELETE','/admin/discord');render()}return}
+  if(a==='dsend'){const content=$('#dm').value.trim(),title=$('#dt').value.trim();if(!content&&!title){er.textContent='Write a message first.';return}
+   b.disabled=true;try{await api('POST','/admin/discord/send',{content,title,allow_mentions:$('#dp').checked});toast('📣 Message sent to Discord','ok');$('#dm').value='';$('#dt').value=''}finally{b.disabled=false}return}
+ }catch(x){if(er)er.textContent=x.message;else alert(x.message)}
+});
 
 /* ---- particle system ---- */
 (function(){
