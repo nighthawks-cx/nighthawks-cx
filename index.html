@@ -733,53 +733,74 @@ function verDlg(){
 }
 
 
-/* ====== Discord: manual posts + automatic store announcements (webhook lives on the backend) ====== */
+/* ====== Discord: many channels, per-event routing, custom messages (webhooks live on the backend) ====== */
 async function discordItemEvent(old,o){
  try{
-  if(!dc||!dc.configured||!apiCfg().url)return;
+  if(!dc||!dc.channels||!dc.channels.length||!apiCfg().url)return;
   let event;
   if(!old.id)event='new_item';
   else if(o.type==='sale'&&(String(old.priceFJD||'')!==String(o.priceFJD||'')||String(old.priceUSDT||'')!==String(o.priceUSDT||'')))event='price_change';
   else return;
-  if(event==='new_item'&&!dc.notify_new_item)return;
-  if(event==='price_change'&&!dc.notify_price_change)return;
-  await api('POST','/admin/discord/notify',{event,title:o.title,category:o.cat,type:o.type,price_fjd:o.priceFJD,price_usdt:o.priceUSDT,old_fjd:old.priceFJD||'',old_usdt:old.priceUSDT||'',description:o.desc||'',store_url:location.href.split('#')[0]});
-  toast('📣 Posted to Discord','ok');
+  if(event==='new_item'&&(!dc.notify_new_item||!dc.routes.new_item.length))return;
+  if(event==='price_change'&&(!dc.notify_price_change||!dc.routes.price_change.length))return;
+  const r=await api('POST','/admin/discord/notify',{event,title:o.title,category:o.cat,type:o.type,price_fjd:o.priceFJD,price_usdt:o.priceUSDT,old_fjd:old.priceFJD||'',old_usdt:old.priceUSDT||'',description:o.desc||'',store_url:location.href.split('#')[0]});
+  if(r.sent)toast('📣 Posted to '+r.sent+' Discord channel'+(r.sent>1?'s':''),'ok');
  }catch(e){toast('Discord post failed: '+e.message)}
 }
 function discordHTML(){
  if(v2Err)return `<div class="empty">${esc(v2Err)}<div style="margin-top:16px">${cfgBtn}</div></div>`;
- if(!dc)return `<div class="empty">Your backend does not have the Discord feature yet. Upload the latest app.py and press Reload on PythonAnywhere.<div style="margin-top:16px">${cfgBtn}</div></div>`;
- const chk='style="width:auto;min-height:0"';
- return `<div class="bar"><h2 style="font-size:26px">Discord</h2><span class="tag">${dc.configured?'webhook connected':'not connected'}</span><span class="sp"></span>${cfgBtn}</div>
- <div class="note" style="margin:0 0 12px">The webhook URL is saved on your backend only. It is never stored in this browser or shown again (anyone holding it can post to your channel).</div>
- <label for="dw">Webhook URL</label>
- <div class="row"><input id="dw" type="password" autocomplete="off" style="flex:1;min-width:220px" placeholder="${dc.configured?esc(dc.masked)+' (saved, paste a new URL to replace)':'https://discord.com/api/webhooks/ID/TOKEN'}"><button type="button" class="btn" data-act="dsave">Save webhook</button>${dc.configured?'<button type="button" class="btn ghost sm" data-act="dtest">Send test</button><button type="button" class="btn bad sm" data-act="ddel">Remove</button>':''}</div>
+ if(!dc||!dc.channels)return `<div class="empty">Your backend does not have the latest Discord feature yet. Upload the newest app.py and press Reload on PythonAnywhere.<div style="margin-top:16px">${cfgBtn}</div></div>`;
+ const chk='style="width:auto;min-height:0"',lbl='style="display:flex;align-items:center;gap:6px;color:var(--tx);margin:0"';
+ const boxes=(attr,key)=>dc.channels.length?dc.channels.map(c=>`<label ${lbl}><input type="checkbox" ${attr} value="${esc(c.id)}" ${key&&dc.routes[key].includes(c.id)?'checked':''} ${chk}> ${esc(c.name)}</label>`).join(''):'<span style="color:var(--mu);font-size:14px">Add a channel first.</span>';
+ return `<div class="bar"><h2 style="font-size:26px">Discord</h2><span class="tag">${dc.channels.length} channel${dc.channels.length===1?'':'s'}</span><span class="sp"></span>${cfgBtn}</div>
+ <div class="note" style="margin:0 0 12px">Each Discord channel has its own webhook (Channel settings → Integrations → Webhooks). Webhook URLs are saved on your backend only and are never shown again.</div>
+ <h3 style="font-size:22px;margin:8px 0">Channels</h3>
+ ${dc.channels.length?`<div class="wrap"><table><thead><tr><th>Name</th><th>Webhook</th><th></th></tr></thead><tbody>${dc.channels.map(c=>`<tr><td>${esc(c.name)}</td><td class="mono">${esc(c.masked)}</td><td style="white-space:nowrap"><button type="button" class="icon" data-act="chtest" data-id="${esc(c.id)}">Test</button><button type="button" class="icon" data-act="chedit" data-id="${esc(c.id)}">Edit</button><button type="button" class="icon bad" data-act="chdel" data-id="${esc(c.id)}">Remove</button></td></tr>`).join('')}</tbody></table></div>`:'<div class="empty" style="padding:16px">No channels yet.</div>'}
+ <div class="row" style="margin-top:12px;align-items:flex-end"><div style="flex:1;min-width:140px"><label for="cn" style="margin-top:0">Channel name</label><input id="cn" maxlength="40" placeholder="#announcements" autocomplete="off"></div><div style="flex:2;min-width:220px"><label for="cw" style="margin-top:0">Webhook URL</label><input id="cw" type="password" placeholder="https://discord.com/api/webhooks/ID/TOKEN" autocomplete="off"></div><button type="button" class="btn" data-act="chadd">+ Add channel</button></div>
  <div class="err" id="derr" role="alert"></div>
  <h3 style="font-size:22px;margin:24px 0 8px">Automatic announcements</h3>
- <label style="display:flex;align-items:center;gap:8px;color:var(--tx)"><input type="checkbox" id="dn1" ${chk} ${dc.notify_new_item?'checked':''}> Post when I add a new store item</label>
- <label style="display:flex;align-items:center;gap:8px;color:var(--tx)"><input type="checkbox" id="dn2" ${chk} ${dc.notify_price_change?'checked':''}> Post when I change an item’s price</label>
- <div class="note" style="margin-top:8px">Announcements show the title, category and price only. Download links are never posted.</div>
+ <div class="note" style="margin:0 0 10px"><label ${lbl}><input type="checkbox" id="dn1" ${chk} ${dc.notify_new_item?'checked':''}> <b>New store item</b></label><div class="row" style="margin-top:8px">${boxes('data-rt="new_item"','new_item')}</div></div>
+ <div class="note" style="margin:0 0 10px"><label ${lbl}><input type="checkbox" id="dn2" ${chk} ${dc.notify_price_change?'checked':''}> <b>Price change</b></label><div class="row" style="margin-top:8px">${boxes('data-rt="price_change"','price_change')}</div></div>
+ <div class="note" style="margin:0">Tick the channels each announcement should go to. Posts show the title, category and price only. Download links are never posted.</div>
  <h3 style="font-size:22px;margin:24px 0 8px">Send a message</h3>
+ <label>Send to</label><div class="row">${boxes('data-sc','')}</div>
  <label for="dt">Title (optional, makes it a styled card)</label><input id="dt" maxlength="200">
- <label for="dm">Message</label><textarea id="dm" maxlength="2000" rows="5" ${dc.configured?'':'disabled'}></textarea>
+ <label for="dm">Message</label><textarea id="dm" maxlength="2000" rows="5"></textarea>
  <label style="display:flex;align-items:center;gap:8px;color:var(--tx)"><input type="checkbox" id="dp" ${chk}> Allow @everyone / @here / role pings</label>
- <div class="row" style="margin-top:12px"><button type="button" class="btn" data-act="dsend" ${dc.configured?'':'disabled'}>Send to Discord</button></div>`;
+ <div class="row" style="margin-top:12px"><button type="button" class="btn" data-act="dsend">Send to Discord</button></div>`;
+}
+function chDlg(id){
+ const c=dc.channels.find(x=>x.id===+id);if(!c)return;dlg.className='';
+ dlg.innerHTML=`<h2>Edit channel</h2><label for="e1">Name</label><input id="e1" maxlength="40" value="${esc(c.name)}">
+ <label for="e2">New webhook URL (leave empty to keep the saved one)</label><input id="e2" type="password" autocomplete="off" placeholder="${esc(c.masked)}">
+ <div class="err" id="ferr" role="alert"></div>
+ <div class="row" style="margin-top:12px;justify-content:flex-end"><button class="btn ghost" id="x" type="button">Cancel</button><button class="btn" id="sv" type="button">Save</button></div>`;
+ dlg.showModal();$('#x').onclick=()=>dlg.close();
+ $('#sv').onclick=async()=>{const b={name:$('#e1').value.trim()},u=$('#e2').value.trim();if(u)b.webhook_url=u;
+  try{dc=await api('PUT','/admin/discord/channels/'+c.id,b);dlg.close();render()}catch(e){$('#ferr').textContent=e.message}};
 }
 $('#view').addEventListener('change',async e=>{
- if(me?.role!=='admin'||(e.target.id!=='dn1'&&e.target.id!=='dn2'))return;
- try{dc=await api('PUT','/admin/discord',e.target.id==='dn1'?{notify_new_item:e.target.checked}:{notify_price_change:e.target.checked});toast('Saved','ok')}catch(x){alert(x.message);refresh()}
+ if(me?.role!=='admin')return;const t=e.target;let b;
+ if(t.id==='dn1')b={notify_new_item:t.checked};
+ else if(t.id==='dn2')b={notify_price_change:t.checked};
+ else if(t.dataset&&t.dataset.rt){const k=t.dataset.rt;b={['route_'+k]:[...document.querySelectorAll('[data-rt="'+k+'"]:checked')].map(x=>+x.value)}}
+ else return;
+ try{dc=await api('PUT','/admin/discord',b);toast('Saved','ok')}catch(x){alert(x.message);refresh()}
 });
 $('#view').addEventListener('click',async e=>{
  const b=e.target.closest('[data-act]');if(!b||!me||me.role!=='admin')return;
- const a=b.dataset.act;if(!['dsave','dtest','ddel','dsend'].includes(a))return;
+ const a=b.dataset.act,id=b.dataset.id;if(!['chadd','chedit','chtest','chdel','dsend'].includes(a))return;
  const er=$('#derr');if(er)er.textContent='';
  try{
-  if(a==='dsave'){const u=$('#dw').value.trim();if(!u){er.textContent='Paste your webhook URL first.';return}dc=await api('PUT','/admin/discord',{webhook_url:u});toast('Webhook saved','ok');render();return}
-  if(a==='dtest'){await api('POST','/admin/discord/send',{title:'Nighthawks test',content:'Connection works ✅'});toast('Test message sent','ok');return}
-  if(a==='ddel'){if(confirm('Remove the saved webhook? Automatic posts will stop.')){dc=await api('DELETE','/admin/discord');render()}return}
-  if(a==='dsend'){const content=$('#dm').value.trim(),title=$('#dt').value.trim();if(!content&&!title){er.textContent='Write a message first.';return}
-   b.disabled=true;try{await api('POST','/admin/discord/send',{content,title,allow_mentions:$('#dp').checked});toast('📣 Message sent to Discord','ok');$('#dm').value='';$('#dt').value=''}finally{b.disabled=false}return}
+  if(a==='chedit')return chDlg(id);
+  if(a==='chadd'){const name=$('#cn').value.trim(),url=$('#cw').value.trim();if(!name||!url){er.textContent='Enter a channel name and its webhook URL.';return}dc=await api('POST','/admin/discord/channels',{name,webhook_url:url});toast('Channel added','ok');render();return}
+  if(a==='chtest'){await api('POST','/admin/discord/channels/'+id+'/test');toast('Test message sent','ok');return}
+  if(a==='chdel'){if(confirm('Remove this channel? Automatic posts to it will stop.')){dc=await api('DELETE','/admin/discord/channels/'+id);render()}return}
+  if(a==='dsend'){
+   const ids=[...document.querySelectorAll('[data-sc]:checked')].map(x=>+x.value),content=$('#dm').value.trim(),title=$('#dt').value.trim();
+   if(!ids.length){er.textContent='Pick at least one channel to send to.';return}
+   if(!content&&!title){er.textContent='Write a message first.';return}
+   b.disabled=true;try{const r=await api('POST','/admin/discord/send',{channel_ids:ids,content,title,allow_mentions:$('#dp').checked});toast('📣 Sent to '+r.sent+' channel'+(r.sent>1?'s':''),'ok');$('#dm').value='';$('#dt').value=''}finally{b.disabled=false}return}
  }catch(x){if(er)er.textContent=x.message;else alert(x.message)}
 });
 
